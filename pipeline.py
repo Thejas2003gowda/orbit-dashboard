@@ -315,12 +315,19 @@ def step1_load(content: str):
     return obs, observer, summary
 
 
-def step3_sweep(obs, observer):
-    """Run full triplet sweep, auto-select best triplet."""
+MAX_STEP = 20   # cap: ~1300 combos instead of 4489, ~3x faster
+
+def step3_sweep(obs, observer, progress_callback=None):
+    """Run triplet sweep up to MAX_STEP, auto-select best triplet.
+    progress_callback(fraction, text) called after each step if provided.
+    """
     N = len(obs); results = []; total = 0
-    for step in range(1, N//2+1):
+    max_step = min(MAX_STEP, N//2)
+    total_combos = sum(N - 2*d for d in range(1, max_step+1))
+    done = 0
+    for step in range(1, max_step+1):
         for start in range(0, N-2*step):
-            total += 1
+            total += 1; done += 1
             i,j,k = start, start+step, start+2*step
             e = gauss_silent(obs[i], obs[j], obs[k], observer)
             if e:
@@ -329,6 +336,8 @@ def step3_sweep(obs, observer):
                                  "t_mid":obs[j]["time_s"],
                                  "dt_span":obs[k]["time_s"]-obs[i]["time_s"],
                                  **{key: e[key] for key in ("sma","ecc","inc","raan","argp","ta","perigee","r_mag")}})
+        if progress_callback:
+            progress_callback(done/total_combos, f"Sweep: step {step}/{max_step} — {len(results)} valid so far")
     # Auto-select lowest local SMA variance
     spans=np.array([r["dt_span"] for r in results]); smas_a=np.array([r["sma"] for r in results])
     order=np.argsort(spans); sp_s=spans[order]; sm_s=smas_a[order]; row_s=np.arange(len(results))[order]
@@ -435,98 +444,188 @@ def step6_dc(obs, observer, gauss_obs_list, gauss_elems):
 
 
 # ─────────────────────────────────────────────────────────────
-# 3D ANIMATION
+# 3D ANIMATION  (Plotly — works natively in Streamlit)
 # ─────────────────────────────────────────────────────────────
 
 def build_animation(dc_elems, rms_f):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.animation import FuncAnimation
+    """Build a Plotly 3D animated orbit figure — plays natively in Streamlit."""
+    import plotly.graph_objects as go
 
     de = dc_elems
 
-    def orbit_eci(sma, ecc, inc_deg, raan_deg, argp_deg, n=800):
+    # ── Orbit curve in ECI ───────────────────────────────────
+    def orbit_eci(sma, ecc, inc_deg, raan_deg, argp_deg, n=300):
         inc=np.radians(inc_deg); raan=np.radians(raan_deg); argp=np.radians(argp_deg)
-        nu=np.linspace(0,2*np.pi,n,endpoint=False)
+        nu=np.linspace(0, 2*np.pi, n, endpoint=False)
         p=sma*(1-ecc**2); r=p/(1+ecc*np.cos(nu))
         xp=r*np.cos(nu); yp=r*np.sin(nu)
-        cO,sO=np.cos(raan),np.sin(raan); ci,si=np.cos(inc),np.sin(inc); cw,sw=np.cos(argp),np.sin(argp)
+        cO,sO=np.cos(raan),np.sin(raan)
+        ci,si=np.cos(inc),np.sin(inc)
+        cw,sw=np.cos(argp),np.sin(argp)
         Q=np.array([[cO*cw-sO*sw*ci,-cO*sw-sO*cw*ci,sO*si],
-                    [sO*cw+cO*sw*ci,-sO*sw+cO*cw*ci,-cO*si],[sw*si,cw*si,ci]])
-        eci=Q@np.vstack([xp,yp,np.zeros(n)]); return eci[0],eci[1],eci[2]
+                    [sO*cw+cO*sw*ci,-sO*sw+cO*cw*ci,-cO*si],
+                    [sw*si,cw*si,ci]])
+        eci=Q@np.vstack([xp,yp,np.zeros(n)])
+        return eci[0],eci[1],eci[2]
 
-    sx,sy,sz=orbit_eci(de["sma"],de["ecc"],de["inc"],de["raan"],de["argp"])
-    U,V=120,60
-    u=np.linspace(0,2*np.pi,U+1); v=np.linspace(0,np.pi,V+1)
-    Ex=RE*np.outer(np.cos(u),np.sin(v)); Ey=RE*np.outer(np.sin(u),np.sin(v))
-    Ez=RE*np.outer(np.ones_like(u),np.cos(v))
-    Uc=(u[:-1]+u[1:])/2; Vc=(v[:-1]+v[1:])/2
-    LON,COLAT=np.meshgrid(Uc,Vc,indexing="ij")
-    LON_D=np.degrees(LON); LAT_D=90-np.degrees(COLAT)
-    OCEAN=np.array([0.02,0.18,0.40,1.0]); LAND_C=np.array([0.05,0.75,0.30,1.0]); ICE=np.array([0.88,0.94,0.98,1.0])
-    fc=np.tile(OCEAN,(U,V,1))
-    for lo0,lo1,la0,la1 in [(190,310,15,72),(275,327,-55,12),(348,360,34,72),(0,40,34,72),
-                             (338,360,-35,37),(0,52,-35,37),(26,145,5,77),(113,154,-45,-10),
-                             (302,342,60,84),(4,32,55,72),(140,175,-47,-34),(192,228,55,72)]:
-        m=((LON_D+270)%360>=lo0)&((LON_D+270)%360<=lo1)&(LAT_D>=la0)&(LAT_D<=la1); fc[m]=LAND_C
-    fc[LAT_D>68]=ICE; fc[LAT_D<-68]=ICE
+    sx,sy,sz = orbit_eci(de["sma"],de["ecc"],de["inc"],de["raan"],de["argp"])
 
-    BG="#04050f"
-    fig=plt.figure(figsize=(11,8),facecolor=BG)
-    ax=fig.add_subplot(111,projection="3d",facecolor=BG)
-    for pane in [ax.xaxis.pane,ax.yaxis.pane,ax.zaxis.pane]:
-        pane.fill=False; pane.set_edgecolor("#0d0d2b")
-    ax.grid(False); ax.set_axis_off()
+    # ── Earth sphere ─────────────────────────────────────────
+    u = np.linspace(0, 2*np.pi, 60)
+    v = np.linspace(0,   np.pi, 40)
+    Ex = RE*np.outer(np.cos(u), np.sin(v))
+    Ey = RE*np.outer(np.sin(u), np.sin(v))
+    Ez = RE*np.outer(np.ones_like(u), np.cos(v))
 
-    rng=np.random.default_rng(7); ns=500; sr=de["sma"]*7
-    sp=rng.uniform(0,2*np.pi,ns); st_=rng.uniform(0,np.pi,ns); ssz=rng.uniform(0.05,0.8,ns)
-    ax.scatter(sr*np.sin(st_)*np.cos(sp),sr*np.sin(st_)*np.sin(sp),sr*np.cos(st_),c="white",s=ssz,alpha=0.45,zorder=0)
+    # Simple land mask using lat/lon bounding boxes
+    LON_D = np.degrees(np.arctan2(Ey, Ex)) % 360
+    LAT_D = np.degrees(np.arcsin(np.clip(Ez/RE, -1, 1)))
+    land_color = np.zeros(Ex.shape)   # 0 = ocean, 1 = land
+    for lo0,lo1,la0,la1 in [(190,310,15,72),(275,327,-55,12),(348,360,34,72),
+                              (0,40,34,72),(338,360,-35,37),(0,52,-35,37),
+                              (26,145,5,77),(113,154,-45,-10),(4,32,55,72),
+                              (192,228,55,72),(140,175,-47,-34)]:
+        m=((LON_D>=lo0)&(LON_D<=lo1)&(LAT_D>=la0)&(LAT_D<=la1))
+        land_color[m]=1
+    land_color[LAT_D>70]=0.5   # ice
 
-    ax.plot_surface(1.026*Ex,1.026*Ey,1.026*Ez,color="#1a6bb5",alpha=0.05,linewidth=0,antialiased=False,zorder=1)
-    ax.plot_surface(Ex,Ey,Ez,facecolors=fc,linewidth=0,antialiased=True,shade=False,zorder=2)
-    et=np.linspace(0,2*np.pi,360)
-    ax.plot(RE*np.cos(et),RE*np.sin(et),np.zeros(360),color="#4a9edd",lw=0.5,alpha=0.4,zorder=3)
+    # ── Animation frames — satellite dot travels orbit ────────
+    N_FRAMES = 60
+    # satellite position at each frame
+    nu_frames = np.linspace(0, 2*np.pi, N_FRAMES, endpoint=False)
+    p_orb = de["sma"]*(1-de["ecc"]**2)
+    r_frames = p_orb/(1+de["ecc"]*np.cos(nu_frames))
+    inc=np.radians(de["inc"]); raan=np.radians(de["raan"]); argp=np.radians(de["argp"])
+    cO,sO=np.cos(raan),np.sin(raan); ci,si=np.cos(inc),np.sin(inc); cw,sw=np.cos(argp),np.sin(argp)
+    Q=np.array([[cO*cw-sO*sw*ci,-cO*sw-sO*cw*ci,sO*si],
+                [sO*cw+cO*sw*ci,-sO*sw+cO*cw*ci,-cO*si],
+                [sw*si,cw*si,ci]])
+    sat_pos = Q @ np.vstack([r_frames*np.cos(nu_frames),
+                              r_frames*np.sin(nu_frames),
+                              np.zeros(N_FRAMES)])
+    sat_x, sat_y, sat_z = sat_pos
 
-    lim=de["sma"]*1.5; ax.set_xlim(-lim,lim); ax.set_ylim(-lim,lim); ax.set_zlim(-lim,lim)
+    # Perigee / apogee
+    r_all = p_orb/(1+de["ecc"]*np.cos(np.linspace(0,2*np.pi,300)))
+    pi_nu = np.linspace(0,2*np.pi,300)[np.argmin(r_all)]
+    ap_nu = np.linspace(0,2*np.pi,300)[np.argmax(r_all)]
+    def eci_pt(nu):
+        r=p_orb/(1+de["ecc"]*np.cos(nu))
+        return Q @ np.array([r*np.cos(nu), r*np.sin(nu), 0])
+    peri_pt = eci_pt(pi_nu); apo_pt = eci_pt(ap_nu)
 
-    nu_a=np.linspace(0,2*np.pi,800,endpoint=False)
-    r_a=de["sma"]*(1-de["ecc"]**2)/(1+de["ecc"]*np.cos(nu_a))
-    pi_idx=int(np.argmin(r_a)); ap_idx=int(np.argmax(r_a))
-    pxyz=(sx[pi_idx],sy[pi_idx],sz[pi_idx]); axyz=(sx[ap_idx],sy[ap_idx],sz[ap_idx])
+    # ── Build Plotly figure ───────────────────────────────────
+    lim = de["sma"] * 1.55
 
-    FPS=25; FADE=40; HOLD=50; ROT=100; TOTAL=FADE+HOLD+ROT
-    orbit_line,=ax.plot([],[],[],color="#00d4ff",lw=2.0,alpha=0.0,zorder=10)
-    glow_line, =ax.plot([],[],[],color="#00d4ff",lw=5.0,alpha=0.0,zorder=9)
-    peri_sc=ax.scatter([],[],[],color="#00ff9f",s=80,zorder=15,edgecolors="white",linewidths=0.8,alpha=0.0)
-    apo_sc =ax.scatter([],[],[],color="#ff6b35",s=60,zorder=15,edgecolors="white",linewidths=0.8,alpha=0.0)
-    ttl=ax.text2D(0.50,0.97,"",transform=ax.transAxes,ha="center",va="top",fontsize=11,color="white",fontweight="bold",fontfamily="monospace")
-    inf=ax.text2D(0.01,0.03,"",transform=ax.transAxes,ha="left",va="bottom",fontsize=8,color="#aaccff",fontfamily="monospace",
-                  bbox=dict(boxstyle="round,pad=0.5",facecolor="#06080f",edgecolor="#223366",alpha=0.85))
+    # Base traces (static)
+    base_traces = [
+        # Earth surface
+        go.Surface(x=Ex, y=Ey, z=Ez,
+                   surfacecolor=land_color,
+                   colorscale=[[0,"#0a2a5e"],[0.5,"#c8e6c8"],[1,"#e8f4e8"]],
+                   showscale=False, opacity=1.0,
+                   lighting=dict(ambient=0.7, diffuse=0.5),
+                   name="Earth"),
+        # Full orbit track
+        go.Scatter3d(x=sx, y=sy, z=sz,
+                     mode="lines",
+                     line=dict(color="#00d4ff", width=3),
+                     opacity=0.85, name="Orbit"),
+        # Perigee
+        go.Scatter3d(x=[peri_pt[0]], y=[peri_pt[1]], z=[peri_pt[2]],
+                     mode="markers+text",
+                     marker=dict(size=6, color="#00ff9f", symbol="diamond"),
+                     text=["⬇ Perigee"], textposition="top center",
+                     textfont=dict(color="#00ff9f", size=10),
+                     name="Perigee"),
+        # Apogee
+        go.Scatter3d(x=[apo_pt[0]], y=[apo_pt[1]], z=[apo_pt[2]],
+                     mode="markers+text",
+                     marker=dict(size=6, color="#ff6b35", symbol="diamond"),
+                     text=["⬆ Apogee"], textposition="top center",
+                     textfont=dict(color="#ff6b35", size=10),
+                     name="Apogee"),
+    ]
 
-    def clamp(v): return float(min(1.0,max(0.0,v)))
-    def split(x,y,z,elev,azim):
-        el=np.radians(elev); az=np.radians(azim)
-        cam=np.array([np.cos(el)*np.cos(az),np.cos(el)*np.sin(az),np.sin(el)])
-        pts=np.vstack([x,y,z]); d=cam@pts; hid=(d<0)&(np.sum(pts**2,axis=0)-d**2<RE**2)
-        xf,yf,zf=x.copy(),y.copy(),z.copy(); xf[hid]=np.nan; yf[hid]=np.nan; zf[hid]=np.nan
-        return xf,yf,zf
+    # Animation frames — satellite dot moves
+    frames = []
+    for k in range(N_FRAMES):
+        frames.append(go.Frame(
+            data=[
+                go.Scatter3d(x=[sat_x[k]], y=[sat_y[k]], z=[sat_z[k]],
+                             mode="markers",
+                             marker=dict(size=10, color="#ffffff",
+                                         symbol="circle",
+                                         line=dict(color="#00d4ff", width=2)),
+                             name="Satellite")
+            ],
+            traces=[4],   # index of satellite trace
+            name=str(k)
+        ))
 
-    def update(frame):
-        azim=130+frame*0.55; ax.view_init(elev=30,azim=azim)
-        t=clamp(frame/FADE)
-        xf,yf,zf=split(sx,sy,sz,30,azim)
-        orbit_line.set_data(xf,yf); orbit_line.set_3d_properties(zf); orbit_line.set_alpha(t*0.9)
-        glow_line.set_data(xf,yf);  glow_line.set_3d_properties(zf);  glow_line.set_alpha(t*0.22)
-        dot_a=clamp((frame-FADE)/15)
-        peri_sc._offsets3d=([pxyz[0]],[pxyz[1]],[pxyz[2]]); peri_sc.set_alpha(clamp(dot_a))
-        apo_sc._offsets3d= ([axyz[0]],[axyz[1]],[axyz[2]]);  apo_sc.set_alpha(clamp(dot_a*0.85))
-        ttl.set_text("AUTONOMOUS ORBIT DETERMINATION  ·  DC + J2")
-        inf.set_text(f" a  = {de['sma']:>10,.2f} km\n e  = {de['ecc']:>10.6f}\n i  = {de['inc']:>10.4f} °\n"
-                     f" Ω  = {de['raan']:>10.4f} °\n ω  = {de['argp']:>10.4f} °\n RMS = {rms_f:>8.4f} \"")
+    # Initial satellite trace (frame 0)
+    sat_trace = go.Scatter3d(
+        x=[sat_x[0]], y=[sat_y[0]], z=[sat_z[0]],
+        mode="markers",
+        marker=dict(size=10, color="#ffffff", symbol="circle",
+                    line=dict(color="#00d4ff", width=2)),
+        name="Satellite"
+    )
 
-    anim=FuncAnimation(fig,update,frames=TOTAL,interval=1000//FPS,blit=False)
-    plt.tight_layout(pad=0.2)
-    html=anim.to_jshtml(fps=FPS,embed_frames=True)
-    plt.close(fig)
-    return html
+    fig = go.Figure(
+        data=base_traces + [sat_trace],
+        frames=frames
+    )
+
+    # ── Layout ────────────────────────────────────────────────
+    fig.update_layout(
+        paper_bgcolor="#04050f",
+        scene=dict(
+            bgcolor="#04050f",
+            xaxis=dict(visible=False, range=[-lim,lim]),
+            yaxis=dict(visible=False, range=[-lim,lim]),
+            zaxis=dict(visible=False, range=[-lim,lim]),
+            aspectmode="cube",
+            camera=dict(eye=dict(x=1.6, y=1.6, z=0.8)),
+        ),
+        margin=dict(l=0,r=0,t=40,b=0),
+        height=580,
+        title=dict(
+            text=(f"<b>Orbit Determination — DC + J2</b><br>"
+                  f"<sup>a={de['sma']:,.1f} km  |  e={de['ecc']:.6f}  |  "
+                  f"i={de['inc']:.4f}°  |  RMS={rms_f:.4f}"</sup>"),
+            font=dict(color="#c8deff", size=13, family="monospace"),
+            x=0.5
+        ),
+        updatemenus=[dict(
+            type="buttons", showactive=False,
+            y=0.02, x=0.5, xanchor="center",
+            buttons=[
+                dict(label="▶  Play",
+                     method="animate",
+                     args=[None, dict(frame=dict(duration=80, redraw=True),
+                                      fromcurrent=True, mode="immediate")]),
+                dict(label="⏸  Pause",
+                     method="animate",
+                     args=[[None], dict(frame=dict(duration=0, redraw=False),
+                                        mode="immediate")]),
+            ],
+            font=dict(color="#00d4ff", family="monospace"),
+            bgcolor="#080f1e", bordercolor="#0d2040",
+        )],
+        sliders=[dict(
+            steps=[dict(method="animate", args=[[str(k)],
+                        dict(mode="immediate", frame=dict(duration=80, redraw=True))],
+                        label="") for k in range(N_FRAMES)],
+            transition=dict(duration=0),
+            x=0.05, y=0, len=0.90,
+            currentvalue=dict(visible=False),
+            bgcolor="#0d2040", bordercolor="#0d2040",
+            tickcolor="#0d2040",
+        )],
+        legend=dict(font=dict(color="#c8deff", size=10), bgcolor="#080f1e",
+                    bordercolor="#0d2040"),
+        font=dict(color="#c8deff"),
+    )
+
+    return fig
