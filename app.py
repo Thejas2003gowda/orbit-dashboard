@@ -225,7 +225,7 @@ if run_btn:
         "dc_elems":      None,
         "r2_dc": None, "v2_dc": None,
         "res_f":  None, "rms_f": None,
-        "anim_html": None,
+        "anim_fig": None,
         "step_logs": {},
     }
 
@@ -242,7 +242,11 @@ if run_btn:
             return msg
 
         elif name == "step3_triplet_sweep":
-            results, selected, summary = step3_sweep(pipe["obs"], pipe["observer"])
+            sweep_bar = st.progress(0, text="Sweep: starting…")
+            def _sweep_progress(frac, text):
+                sweep_bar.progress(min(frac, 1.0), text=text)
+            results, selected, summary = step3_sweep(pipe["obs"], pipe["observer"], progress_callback=_sweep_progress)
+            sweep_bar.empty()
             pipe["sweep_results"] = results
             pipe["selected"]      = selected
             i,j,k = selected["i"], selected["j"], selected["k"]
@@ -252,13 +256,12 @@ if run_btn:
 
         elif name == "step4_orbit_visualization":
             if pipe["dc_elems"] is not None:
-                html = build_animation(pipe["dc_elems"], pipe["rms_f"])
+                pipe["anim_fig"] = build_animation(pipe["dc_elems"], pipe["rms_f"])
             elif pipe["gauss_elems"] is not None:
-                html = build_animation(pipe["gauss_elems"], 99.9)
+                pipe["anim_fig"] = build_animation(pipe["gauss_elems"], 99.9)
             else:
                 return "Cannot build visualization yet — run Gauss first."
-            pipe["anim_html"] = html
-            return "3D orbit animation generated successfully. The rotating globe with the satellite orbit track is ready for display."
+            return "3D orbit animation generated successfully. Plotly interactive globe with satellite orbit track is ready."
 
         elif name == "step5_gauss_solution":
             if pipe["selected"] is None:
@@ -282,9 +285,8 @@ if run_btn:
             pipe["res_f"]    = res_f
             pipe["rms_f"]    = rms_f
             pipe["step_logs"]["step6"] = summary
-            # Build animation now that DC is done
-            html = build_animation(dc_e, rms_f)
-            pipe["anim_html"] = html
+            # Build Plotly animation now that DC is done
+            pipe["anim_fig"] = build_animation(dc_e, rms_f)
             return summary
 
         elif name == "predict_position":
@@ -405,7 +407,7 @@ if run_btn:
         "rms_f":     pipe["rms_f"],
         "sweep":     pipe["sweep_results"],
         "selected":  pipe["selected"],
-        "anim_html": pipe["anim_html"],
+        "anim_fig": pipe["anim_fig"],
         "step_logs": pipe["step_logs"],
     }
     st.session_state.pipeline_done = True
@@ -445,8 +447,8 @@ if st.session_state.pipeline_done:
     # ═══════════════ TAB 1 — ANIMATION ════════════════════
     with tab_anim:
         st.markdown('<div class="section-header">3D Orbit Animation — DC + J2 Solution</div>', unsafe_allow_html=True)
-        if res.get("anim_html"):
-            st.components.v1.html(res["anim_html"], height=600, scrolling=False)
+        if res.get("anim_fig") is not None:
+            st.plotly_chart(res["anim_fig"], use_container_width=True)
         else:
             st.info("Animation not available — pipeline may not have completed fully.")
         if dc:
