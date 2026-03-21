@@ -315,9 +315,10 @@ if run_btn:
         return f"Unknown tool: {name}"
 
     # ── Anthropic client ─────────────────────────────────────
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    import os
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
     if not api_key:
-        st.error("ANTHROPIC_API_KEY not found in Streamlit secrets."); st.stop()
+        st.error("ANTHROPIC_API_KEY not found in Streamlit secrets or environment."); st.stop()
     client = anthropic.Anthropic(api_key=api_key)
 
     # ── Live streaming UI ────────────────────────────────────
@@ -335,13 +336,18 @@ if run_btn:
     with agent_container:
         while True:
             iteration += 1
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2048,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=messages
-            )
+            try:
+                response = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=4096,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOLS,
+                    messages=messages
+                )
+            except Exception as e:
+                progress_bar.empty()
+                st.error(f"Agent API Error: {e}")
+                st.stop()
 
             # ── Render Claude's text thinking ────────────────
             tool_uses = []
