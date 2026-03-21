@@ -593,7 +593,7 @@ def build_animation(dc_elems, rms_f):
         title=dict(
             text=(f"<b>Orbit Determination — DC + J2</b><br>"
                   f"<sup>a={de['sma']:,.1f} km  |  e={de['ecc']:.6f}  |  "
-                  f"i={de['inc']:.4f}°  |  RMS={rms_f:.4f}"</sup>"),
+                  f"i={de['inc']:.4f}°  |  RMS={rms_f:.4f}\"</sup>"),
             font=dict(color="#c8deff", size=13, family="monospace"),
             x=0.5
         ),
