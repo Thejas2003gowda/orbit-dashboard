@@ -338,7 +338,7 @@ if run_btn:
             iteration += 1
             try:
                 response = client.messages.create(
-                    model="claude-4-5-sonnet-20241022",
+                    model="claude-sonnet-4-5",
                     max_tokens=4096,
                     system=SYSTEM_PROMPT,
                     tools=TOOLS,
